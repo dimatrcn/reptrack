@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RepTrack">
+<meta name="theme-color" content="#0d0d0d">
+<title>RepTrack</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { background: #0d0d0d; color: #f0f0f0; font-family: 'DM Mono', 'Courier New', monospace; min-height: 100vh; min-height: -webkit-fill-available; }
+  input:focus { outline: none; }
+  button { cursor: pointer; font-family: inherit; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: #1a1a1a; }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+  @keyframes celebrate { 0%,100%{transform:scale(1)} 50%{transform:scale(1.03)} }
+  @keyframes slideIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+</style>
+</head>
+<body>
+<div id="app" style="max-width:520px;margin:0 auto;padding:24px 16px 48px;"></div>
+
+<script>
+const STORAGE_KEY = 'reptrack-v1';
+
+const DEFAULT_GOALS = [
+  { id: 'pullups', name: 'Pull-ups', goal: 10000, color: '#ff6b35' },
+  { id: 'pushups', name: 'Push-ups', goal: 20000, color: '#4ecdc4' },
+];
+
+let state = {
+  goals: DEFAULT_GOALS,
+  reps: {},
+  log: {},
+  activeTab: 'pullups',
+  addingGoal: false,
+  newGoal: { name: '', goal: '', color: '#a78bfa' },
+  celebrating: null,
+};
+
+function load() {
+  try {
+    const d = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (d) {
+      state.goals = d.goals || DEFAULT_GOALS;
+      state.reps = d.reps || {};
+      state.log = d.log || {};
+      state.activeTab = state.goals[0]?.id || null;
+    }
+  } catch(e) {}
+}
+
+function save() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      goals: state.goals, reps: state.reps, log: state.log
+    }));
+  } catch(e) {}
+}
+
+function setState(updates) {
+  Object.assign(state, updates);
+  render();
+}
+
+function addReps(id, count) {
+  count = parseInt(count);
+  if (!count || count <= 0) return;
+  const goal = state.goals.find(g => g.id === id);
+  const prev = state.reps[id] || 0;
+  state.reps[id] = prev + count;
+  const entry = {
+    count,
+    date: new Date().toLocaleDateString(),
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  };
+  state.log[id] = [entry, ...(state.log[id] || [])].slice(0, 50);
+  save();
+  if (prev < goal.goal && state.reps[id] >= goal.goal) {
+    state.celebrating = id;
+    setTimeout(() => { state.celebrating = null; render(); }, 3000);
+  }
+  render();
+}
+
+function addGoal() {
+  const { name, goal, color } = state.newGoal;
+  if (!name || !goal) return;
+  const id = name.toLowerCase().replace(/\s+/g,'-') + '-' + Date.now();
+  state.goals.push({ id, name, goal: parseInt(goal), color, });
+  state.activeTab = id;
+  state.addingGoal = false;
+  state.newGoal = { name: '', goal: '', color: '#a78bfa' };
+  save();
+  render();
+}
+
+function deleteGoal(id) {
+  state.goals = state.goals.filter(g => g.id !== id);
+  delete state.reps[id];
+  delete state.log[id];
+  state.activeTab = state.goals[0]?.id || null;
+  save();
+  render();
+}
+
+function render() {
+  const { goals, reps, log, activeTab, addingGoal, newGoal, celebrating } = state;
+  const active = goals.find(g => g.id === activeTab);
+  const activeReps = active ? (reps[active.id] || 0) : 0;
+  const pct = active ? Math.min((activeReps / active.goal) * 100, 100) : 0;
+  const remaining = active ? Math.max(active.goal - activeReps, 0) : 0;
+
+  const tabsHTML = goals.map(g => `
+    <button onclick="setState({activeTab:'${g.id}'})" style="
+      padding:6px 14px;
+      background:${activeTab === g.id ? g.color : 'transparent'};
+      border:1px solid ${activeTab === g.id ? g.color : '#333'};
+      border-radius:4px;
+      color:${activeTab === g.id ? '#0d0d0d' : '#888'};
+      font-size:11px;
+      font-weight:500;
+      letter-spacing:1px;
+      transition:all 0.15s;
+    ">${g.name.toUpperCase()}</button>
+  `).join('');
+
+  const addGoalForm = addingGoal ? `
+    <div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:16px;margin-bottom:24px;animation:slideIn 0.2s ease;">
+      <div style="font-size:11px;color:#555;letter-spacing:2px;margin-bottom:12px;">NEW GOAL</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <input id="ng-name" placeholder="Exercise name" value="${newGoal.name}"
+          oninput="state.newGoal.name=this.value"
+          style="background:#111;border:1px solid #2a2a2a;border-radius:4px;padding:8px 12px;color:#f0f0f0;font-family:inherit;font-size:13px;">
+        <input id="ng-goal" type="number" placeholder="Target reps (e.g. 10000)" value="${newGoal.goal}"
+          oninput="state.newGoal.goal=this.value"
+          style="background:#111;border:1px solid #2a2a2a;border-radius:4px;padding:8px 12px;color:#f0f0f0;font-family:inherit;font-size:13px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:11px;color:#555;">COLOR</span>
+          <input type="color" value="${newGoal.color}" oninput="state.newGoal.color=this.value;render()"
+            style="background:none;border:none;width:32px;height:28px;cursor:pointer;">
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button onclick="addGoal()" style="flex:1;padding:8px;background:${newGoal.color};border:none;border-radius:4px;color:#000;font-family:inherit;font-size:12px;font-weight:500;letter-spacing:1px;">CREATE</button>
+          <button onclick="setState({addingGoal:false})" style="padding:8px 16px;background:transparent;border:1px solid #333;border-radius:4px;color:#888;font-family:inherit;font-size:12px;">CANCEL</button>
+        </div>
+      </div>
+    </div>
+  ` : '';
+
+  const celebrateBanner = celebrating === active?.id ? `
+    <div style="background:${active.color};color:#000;padding:10px 16px;border-radius:6px;margin-bottom:20px;text-align:center;font-family:'Syne',sans-serif;font-weight:800;font-size:14px;letter-spacing:2px;animation:slideIn 0.2s ease;">
+      🏆 GOAL COMPLETE! ABSOLUTE BEAST!
+    </div>
+  ` : '';
+
+  const quickBtns = [5, 10, 15, 20, 25, 50].map(n => `
+    <button onclick="addReps('${active?.id}', ${n})" style="
+      padding:6px 0;
+      background:transparent;
+      border:1px solid ${active?.color}44;
+      border-radius:3px;
+      color:${active?.color};
+      font-family:inherit;
+      font-size:11px;
+      flex:1;
+    ">+${n}</button>
+  `).join('');
+
+  const logItems = active ? (log[active.id] || []).map((entry, i) => `
+    <div style="
+      display:flex;justify-content:space-between;align-items:center;
+      padding:6px 10px;background:#111;border-radius:4px;
+      border-left:2px solid ${active.color}66;
+      ${i===0?'animation:slideIn 0.2s ease;':''}
+    ">
+      <span style="color:${active.color};font-family:'Syne',sans-serif;font-weight:700;font-size:15px;">+${entry.count}</span>
+      <span style="color:#444;font-size:10px;">${entry.date} ${entry.time}</span>
+    </div>
+  `).join('') : '';
+
+  const activeSection = active ? `
+    <div style="${celebrating === active.id ? 'animation:celebrate 0.5s ease;' : ''}">
+      <div style="margin-bottom:24px;">
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <div style="font-family:'Syne',sans-serif;font-size:clamp(44px,12vw,64px);font-weight:800;color:${active.color};line-height:1;letter-spacing:-3px;">
+            ${activeReps.toLocaleString()}
+          </div>
+          <div style="color:#444;font-size:18px;">/ ${active.goal.toLocaleString()}</div>
+        </div>
+        <div style="color:#555;font-size:11px;letter-spacing:2px;margin-top:4px;">
+          ${remaining > 0 ? remaining.toLocaleString() + ' TO GO' : '🔥 GOAL CRUSHED'}
+        </div>
+      </div>
+
+      <div style="margin-bottom:28px;">
+        <div style="height:6px;background:#1a1a1a;border-radius:3px;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,${active.color}88,${active.color});border-radius:3px;transition:width 0.4s ease;box-shadow:0 0 8px ${active.color}66;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px;">
+          <span style="font-size:10px;color:#444;">0</span>
+          <span style="font-size:10px;color:${active.color};">${pct.toFixed(1)}%</span>
+          <span style="font-size:10px;color:#444;">${active.goal.toLocaleString()}</span>
+        </div>
+      </div>
+
+      ${celebrateBanner}
+
+      <div style="background:#111;border:1px solid #1e1e1e;border-radius:8px;padding:16px;margin-bottom:24px;">
+        <div style="font-size:11px;color:#555;letter-spacing:2px;margin-bottom:12px;">LOG REPS</div>
+        <div style="display:flex;gap:8px;">
+          <input id="rep-input" type="number" min="1" placeholder="How many?" 
+            style="flex:1;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:4px;padding:10px 14px;color:#f0f0f0;font-family:'Syne',sans-serif;font-size:18px;font-weight:700;"
+            onkeydown="if(event.key==='Enter'){const v=this.value;this.value='';addReps('${active.id}',v);}">
+          <button onclick="const i=document.getElementById('rep-input');const v=i.value;i.value='';addReps('${active.id}',v);" style="
+            padding:10px 20px;background:${active.color};border:none;border-radius:4px;
+            color:#000;font-family:'Syne',sans-serif;font-size:13px;font-weight:800;letter-spacing:1px;
+          ">ADD</button>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:10px;">
+          ${quickBtns}
+        </div>
+      </div>
+
+      ${(log[active.id] || []).length > 0 ? `
+        <div>
+          <div style="font-size:11px;color:#555;letter-spacing:2px;margin-bottom:10px;">RECENT</div>
+          <div style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;">
+            ${logItems}
+          </div>
+        </div>
+      ` : ''}
+
+      ${goals.length > 1 ? `
+        <button onclick="if(confirm('Delete ${active.name}?'))deleteGoal('${active.id}')" style="
+          margin-top:24px;width:100%;padding:8px;background:transparent;
+          border:1px solid #1e1e1e;border-radius:4px;color:#333;
+          font-family:inherit;font-size:10px;letter-spacing:2px;
+        ">DELETE GOAL</button>
+      ` : ''}
+    </div>
+  ` : '<div style="text-align:center;color:#444;font-size:13px;padding-top:48px;">No goals yet. Add one above.</div>';
+
+  document.getElementById('app').innerHTML = `
+    <div style="margin-bottom:32px;">
+      <div style="font-family:'Syne',sans-serif;font-size:28px;font-weight:800;letter-spacing:-1px;color:#fff;">
+        REP<span style="color:#ff6b35;">TRACK</span>
+      </div>
+      <div style="color:#555;font-size:11px;letter-spacing:2px;margin-top:2px;">GRIND LOG v1.0</div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
+      ${tabsHTML}
+      <button onclick="setState({addingGoal:true})" style="
+        padding:6px 14px;background:transparent;border:1px dashed #333;
+        border-radius:4px;color:#555;font-size:11px;font-family:inherit;letter-spacing:1px;
+      ">+ NEW</button>
+    </div>
+
+    ${addGoalForm}
+    ${activeSection}
+  `;
+}
+
+load();
+render();
+</script>
+</body>
+</html>
