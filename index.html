@@ -13,7 +13,7 @@
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
   body { background: #0d0d0d; color: #f0f0f0; font-family: 'DM Mono', 'Courier New', monospace; min-height: 100vh; }
-  input:focus { outline: none; }
+  input:focus, select:focus { outline: none; }
   button { cursor: pointer; font-family: inherit; }
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
@@ -23,6 +23,7 @@
 
   @keyframes celebrate { 0%,100%{transform:scale(1)} 50%{transform:scale(1.03)} }
   @keyframes slideIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes achievePop { 0%{transform:scale(0.8);opacity:0} 60%{transform:scale(1.05)} 100%{transform:scale(1);opacity:1} }
 
   #shell { display: flex; flex-direction: column; min-height: 100vh; }
 
@@ -32,12 +33,11 @@
     #main { flex: 1; overflow-y: auto; padding: 40px 56px; }
     #main-inner { max-width: 700px; }
     .big-number { font-size: clamp(72px, 8vw, 110px); }
-    .log-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 320px; overflow-y: auto; }
+    .log-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 280px; overflow-y: auto; }
     .input-pad { padding: 14px 18px; font-size: 22px; }
     .add-btn-pad { padding: 14px 28px; font-size: 14px; }
     .section-pad { padding: 24px; }
   }
-
   @media (max-width: 767px) {
     #sidebar { padding: 24px 16px 0; }
     #main { padding: 20px 16px 48px; }
@@ -56,6 +56,10 @@
   .quick-btn { padding: 8px 0; background: transparent; border-radius: 3px; font-family: inherit; font-size: 12px; flex: 1; transition: background 0.1s; }
   .add-btn { border: none; border-radius: 4px; color: #000; font-family: 'Syne', sans-serif; font-weight: 800; letter-spacing: 1px; transition: opacity 0.1s; }
   .add-btn:hover { opacity: 0.85; }
+  .nav-tab { padding: 8px 14px; background: transparent; border: none; border-bottom: 2px solid transparent; color: #444; font-size: 11px; letter-spacing: 2px; transition: all 0.15s; }
+  .nav-tab.active { color: #f0f0f0; border-bottom-color: #ff6b35; }
+  .range-btn { padding: 4px 10px; background: transparent; border: 1px solid #222; border-radius: 3px; color: #444; font-size: 10px; letter-spacing: 1px; transition: all 0.15s; }
+  .range-btn.active { background: #222; color: #f0f0f0; border-color: #333; }
 </style>
 </head>
 <body>
@@ -65,41 +69,61 @@
 </div>
 
 <script>
-const STORAGE_KEY = 'reptrack-v1';
+const STORAGE_KEY = 'reptrack-v3';
+
 const DEFAULT_GOALS = [
-  { id: 'pullups', name: 'Pull-ups', goal: 10000, color: '#ff6b35' },
-  { id: 'pushups', name: 'Push-ups', goal: 20000, color: '#4ecdc4' },
+  { id: 'pullups', name: 'Pull-ups', goal: 10000, color: '#ff6b35', maxGoal: 30 },
+  { id: 'pushups', name: 'Push-ups', goal: 20000, color: '#4ecdc4', maxGoal: 50 },
 ];
 
 let state = {
   goals: DEFAULT_GOALS,
   reps: {},
   log: {},
+  maxLog: {},
+  achievements: {},
+  skills: [],
   activeTab: 'pullups',
+  activeView: 'goals',
   addingGoal: false,
-  newGoal: { name: '', goal: '', color: '#a78bfa' },
+  addingSkill: false,
+  testingMax: null,
+  graphRange: '3m',  // '30d' | '3m' | 'all'
+  newGoal: { name: '', goal: '', maxGoal: '', color: '#a78bfa' },
+  newSkill: { name: '', type: 'count', target: '', unit: 'reps', color: '#4ecdc4', notes: '' },
   celebrating: null,
+  newAchievement: null,
 };
+
+// ── Storage ──────────────────────────────────────────────────────────────────
 
 function load() {
   try {
     const d = JSON.parse(localStorage.getItem(STORAGE_KEY));
     if (d) {
-      state.goals = d.goals || DEFAULT_GOALS;
-      state.reps  = d.reps  || {};
-      state.log   = d.log   || {};
-      state.activeTab = state.goals[0]?.id || null;
+      state.goals        = d.goals        || DEFAULT_GOALS;
+      state.reps         = d.reps         || {};
+      state.log          = d.log          || {};
+      state.maxLog       = d.maxLog       || {};
+      state.achievements = d.achievements || {};
+      state.skills       = d.skills       || [];
+      state.activeTab    = state.goals[0]?.id || null;
     }
   } catch(e) {}
 }
 
 function save() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ goals: state.goals, reps: state.reps, log: state.log }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      goals: state.goals, reps: state.reps, log: state.log,
+      maxLog: state.maxLog, achievements: state.achievements, skills: state.skills
+    }));
   } catch(e) {}
 }
 
 function setState(updates) { Object.assign(state, updates); render(); }
+
+// ── Rep logging ───────────────────────────────────────────────────────────────
 
 function addReps(id, count) {
   count = parseInt(count);
@@ -107,8 +131,19 @@ function addReps(id, count) {
   const goal = state.goals.find(g => g.id === id);
   const prev = state.reps[id] || 0;
   state.reps[id] = prev + count;
-  const entry = { count, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) };
-  state.log[id] = [entry, ...(state.log[id] || [])].slice(0, 100);
+  const now = new Date();
+  const entry = { count, date: now.toLocaleDateString(), time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), ts: now.getTime() };
+  state.log[id] = [entry, ...(state.log[id] || [])].slice(0, 500);
+  if (!state.achievements[id]) state.achievements[id] = {};
+  const pct = (state.reps[id] / goal.goal) * 100;
+  const prevPct = (prev / goal.goal) * 100;
+  for (const m of [25, 50, 75, 100]) {
+    if (!state.achievements[id][m] && pct >= m && prevPct < m) {
+      state.achievements[id][m] = true;
+      state.newAchievement = { goalName: goal.name, milestone: m, color: goal.color };
+      setTimeout(() => { state.newAchievement = null; render(); }, 4000);
+    }
+  }
   save();
   if (prev < goal.goal && state.reps[id] >= goal.goal) {
     state.celebrating = id;
@@ -120,38 +155,89 @@ function addReps(id, count) {
 function undoLast(id) {
   const log = state.log[id] || [];
   if (!log.length) return;
-  const last = log[0];
   state.log[id] = log.slice(1);
-  state.reps[id] = Math.max((state.reps[id] || 0) - last.count, 0);
+  state.reps[id] = Math.max((state.reps[id] || 0) - log[0].count, 0);
   save(); render();
 }
 
+// ── Max reps ─────────────────────────────────────────────────────────────────
+
+function submitMax(id) {
+  const input = document.getElementById('max-input');
+  const count = parseInt(input?.value || 0);
+  if (!count || count <= 0) return;
+  const now = new Date();
+  const entry = { count, date: now.toLocaleDateString(), ts: now.getTime() };
+  state.maxLog[id] = [entry, ...(state.maxLog[id] || [])].slice(0, 200);
+  state.testingMax = null;
+  save(); render();
+}
+
+function getCurrentMax(id) {
+  const entries = state.maxLog[id] || [];
+  return entries.length ? Math.max(...entries.map(e => e.count)) : 0;
+}
+
+// ── Goals CRUD ────────────────────────────────────────────────────────────────
+
 function addGoal() {
-  const { name, goal, color } = state.newGoal;
+  const { name, goal, maxGoal, color } = state.newGoal;
   if (!name || !goal) return;
-  const id = name.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now();
-  state.goals.push({ id, name, goal: parseInt(goal), color });
+  const id = 'goal-' + Date.now();
+  state.goals.push({ id, name, goal: parseInt(goal), maxGoal: parseInt(maxGoal) || 0, color });
   state.activeTab = id;
+  state.activeView = 'goals';
   state.addingGoal = false;
-  state.newGoal = { name: '', goal: '', color: '#a78bfa' };
+  state.newGoal = { name: '', goal: '', maxGoal: '', color: '#a78bfa' };
   save(); render();
 }
 
 function deleteGoal(id) {
   if (!confirm('Delete this goal and all its data?')) return;
   state.goals = state.goals.filter(g => g.id !== id);
-  delete state.reps[id]; delete state.log[id];
+  delete state.reps[id]; delete state.log[id]; delete state.maxLog[id]; delete state.achievements[id];
   state.activeTab = state.goals[0]?.id || null;
   save(); render();
 }
 
+// ── Skills CRUD ───────────────────────────────────────────────────────────────
+
+function addSkill() {
+  const { name, type, target, unit, color, notes } = state.newSkill;
+  if (!name) return;
+  const id = 'skill-' + Date.now();
+  state.skills.push({ id, name, type, target: parseFloat(target) || 0, unit, color, notes, achieved: false, achievedDate: null });
+  state.activeTab = id;
+  state.activeView = 'skills';
+  state.addingSkill = false;
+  state.newSkill = { name: '', type: 'count', target: '', unit: 'reps', color: '#4ecdc4', notes: '' };
+  save(); render();
+}
+
+function toggleSkillAchieved(id) {
+  const skill = state.skills.find(s => s.id === id);
+  if (!skill) return;
+  skill.achieved = !skill.achieved;
+  skill.achievedDate = skill.achieved ? new Date().toLocaleDateString() : null;
+  save(); render();
+}
+
+function deleteSkill(id) {
+  if (!confirm('Delete this skill goal?')) return;
+  state.skills = state.skills.filter(s => s.id !== id);
+  state.activeTab = state.skills[0]?.id || state.goals[0]?.id || null;
+  state.activeView = state.skills.length ? 'skills' : 'goals';
+  save(); render();
+}
+
+// ── Export / Import ───────────────────────────────────────────────────────────
+
 function exportData() {
-  const data = { goals: state.goals, reps: state.reps, log: state.log, exportedAt: new Date().toISOString() };
+  const data = { goals: state.goals, reps: state.reps, log: state.log, maxLog: state.maxLog, achievements: state.achievements, skills: state.skills, exportedAt: new Date().toISOString() };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const date = new Date().toISOString().split('T')[0];
-  a.href = url; a.download = `reptrack-backup-${date}.json`;
+  a.href = url; a.download = `reptrack-backup-${new Date().toISOString().split('T')[0]}.json`;
   a.click(); URL.revokeObjectURL(url);
 }
 
@@ -165,107 +251,218 @@ function importData() {
     reader.onload = ev => {
       try {
         const d = JSON.parse(ev.target.result);
-        if (!d.goals || !d.reps) { alert('Invalid backup file.'); return; }
+        if (!d.goals) { alert('Invalid backup file.'); return; }
         if (!confirm('This will replace all current data. Continue?')) return;
-        state.goals = d.goals;
-        state.reps = d.reps;
-        state.log = d.log || {};
+        state.goals = d.goals; state.reps = d.reps||{}; state.log = d.log||{};
+        state.maxLog = d.maxLog||{}; state.achievements = d.achievements||{}; state.skills = d.skills||[];
         state.activeTab = state.goals[0]?.id || null;
         save(); render();
-      } catch(e) { alert('Could not read file. Make sure it\'s a valid RepTrack backup.'); }
+      } catch(e) { alert('Could not read file.'); }
     };
     reader.readAsText(file);
   };
   input.click();
 }
 
+// ── Graph ─────────────────────────────────────────────────────────────────────
+
+function buildMaxGraph(id, color) {
+  const allEntries = [...(state.maxLog[id] || [])].reverse(); // oldest first
+  if (allEntries.length < 2) return null;
+
+  const now = Date.now();
+  const ranges = { '30d': 30, '3m': 90, 'all': Infinity };
+  const days = ranges[state.graphRange];
+  const cutoff = days === Infinity ? 0 : now - days * 86400000;
+
+  // For entries without ts, parse date string
+  const entries = allEntries.filter(e => {
+    const ts = e.ts || new Date(e.date).getTime();
+    return ts >= cutoff;
+  });
+
+  if (entries.length < 2) {
+    // Show all if filter too narrow
+    if (allEntries.length < 2) return null;
+    return buildGraphSVG(allEntries, color);
+  }
+  return buildGraphSVG(entries, color);
+}
+
+function buildGraphSVG(entries, color) {
+  const W = 600, H = 160, PL = 40, PR = 16, PT = 16, PB = 32;
+  const gW = W - PL - PR, gH = H - PT - PB;
+
+  const vals = entries.map(e => e.count);
+  const minV = Math.min(...vals);
+  const maxV = Math.max(...vals);
+  const range = maxV - minV || 1;
+
+  const points = entries.map((e, i) => {
+    const x = PL + (i / (entries.length - 1)) * gW;
+    const y = PT + gH - ((e.count - minV) / range) * gH;
+    return { x, y, e };
+  });
+
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const areaD = pathD + ` L${points[points.length-1].x.toFixed(1)},${(PT+gH).toFixed(1)} L${PL},${(PT+gH).toFixed(1)} Z`;
+
+  // Y axis labels
+  const yLabels = [minV, Math.round((minV+maxV)/2), maxV].map((v, i) => {
+    const y = PT + gH - ((v - minV) / range) * gH;
+    return `<text x="${PL - 6}" y="${y + 4}" font-size="9" fill="#444" text-anchor="end">${v}</text>`;
+  }).join('');
+
+  // X axis labels — first and last
+  const xLabels = [entries[0], entries[entries.length - 1]].map((e, i) => {
+    const x = i === 0 ? PL : PL + gW;
+    return `<text x="${x}" y="${H - 6}" font-size="9" fill="#444" text-anchor="${i===0?'start':'end'}">${e.date}</text>`;
+  }).join('');
+
+  // Dots
+  const dots = points.map(p =>
+    `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="${color}" opacity="0.8"/>`
+  ).join('');
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${color}" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT+gH}" stroke="#1e1e1e" stroke-width="1"/>
+      <line x1="${PL}" y1="${PT+gH}" x2="${PL+gW}" y2="${PT+gH}" stroke="#1e1e1e" stroke-width="1"/>
+      ${yLabels}
+      ${xLabels}
+      <path d="${areaD}" fill="url(#ag)"/>
+      <path d="${pathD}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      ${dots}
+    </svg>`;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 const isDesktop = () => window.innerWidth >= 768;
 
+function navBar(active) {
+  return `
+    <div style="display:flex;gap:0;margin-bottom:20px;border-bottom:1px solid #1a1a1a;">
+      <button class="nav-tab ${active==='goals'?'active':''}" onclick="setState({activeView:'goals'})">GOALS</button>
+      <button class="nav-tab ${active==='skills'?'active':''}" onclick="setState({activeView:'skills'})">SKILLS</button>
+    </div>`;
+}
+
+// ── Render: Sidebar ───────────────────────────────────────────────────────────
+
 function renderSidebar() {
-  const { goals, reps, activeTab } = state;
+  const { goals, reps, skills, activeTab, activeView } = state;
   const el = document.getElementById('sidebar');
 
+  const backupBtns = `
+    <div style="margin-top:auto;padding-top:32px;">
+      <div style="font-size:10px;color:#2a2a2a;letter-spacing:2px;margin-bottom:8px;">BACKUP</div>
+      <div style="display:flex;gap:6px;">
+        <button onclick="exportData()" style="flex:1;padding:8px;background:transparent;border:1px solid #222;border-radius:4px;color:#444;font-size:10px;letter-spacing:1px;transition:all 0.15s;"
+          onmouseover="this.style.borderColor='#555';this.style.color='#888'" onmouseout="this.style.borderColor='#222';this.style.color='#444'">↓ EXPORT</button>
+        <button onclick="importData()" style="flex:1;padding:8px;background:transparent;border:1px solid #222;border-radius:4px;color:#444;font-size:10px;letter-spacing:1px;transition:all 0.15s;"
+          onmouseover="this.style.borderColor='#555';this.style.color='#888'" onmouseout="this.style.borderColor='#222';this.style.color='#444'">↑ IMPORT</button>
+      </div>
+    </div>`;
+
   if (isDesktop()) {
-    const cards = goals.map(g => {
+    const goalCards = goals.map(g => {
       const r = reps[g.id] || 0;
       const pct = Math.min((r / g.goal) * 100, 100);
+      const curMax = getCurrentMax(g.id);
+      const isActive = activeView === 'goals' && activeTab === g.id;
       return `
-        <div class="goal-card ${activeTab === g.id ? 'active' : ''}"
-             onclick="setState({activeTab:'${g.id}'})"
-             style="border-color:${activeTab === g.id ? g.color + '44' : 'transparent'}">
+        <div class="goal-card ${isActive?'active':''}" onclick="setState({activeView:'goals',activeTab:'${g.id}'})"
+             style="border-color:${isActive?g.color+'44':'transparent'}">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;">
-            <span style="font-size:11px;font-weight:500;color:${activeTab === g.id ? g.color : '#777'};letter-spacing:1px;">${g.name.toUpperCase()}</span>
+            <span style="font-size:11px;font-weight:500;color:${isActive?g.color:'#777'};letter-spacing:1px;">${g.name.toUpperCase()}</span>
             <span style="font-size:10px;color:#444;">${pct.toFixed(0)}%</span>
           </div>
           <div style="height:3px;background:#222;border-radius:2px;overflow:hidden;margin-bottom:7px;">
             <div style="height:100%;width:${pct}%;background:${g.color};border-radius:2px;transition:width 0.4s;"></div>
           </div>
-          <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;color:${activeTab === g.id ? g.color : '#555'};">
-            ${r.toLocaleString()} <span style="font-size:10px;font-family:'DM Mono',monospace;color:#3a3a3a;font-weight:400;">/ ${g.goal.toLocaleString()}</span>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;color:${isActive?g.color:'#555'};">
+              ${r.toLocaleString()} <span style="font-size:10px;font-family:'DM Mono',monospace;color:#3a3a3a;font-weight:400;">/ ${g.goal.toLocaleString()}</span>
+            </div>
+            ${curMax ? `<span style="font-size:10px;color:#444;">MAX ${curMax}</span>` : ''}
           </div>
         </div>`;
     }).join('');
 
+    const skillCards = skills.map(s => {
+      const isActive = activeView === 'skills' && activeTab === s.id;
+      return `
+        <div class="goal-card ${isActive?'active':''}" onclick="setState({activeView:'skills',activeTab:'${s.id}'})"
+             style="border-color:${isActive?s.color+'44':'transparent'}">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:11px;font-weight:500;color:${isActive?s.color:'#777'};letter-spacing:1px;">${s.name.toUpperCase()}</span>
+            ${s.achieved ? `<span style="font-size:10px;color:${s.color};">✓</span>` : ''}
+          </div>
+          <div style="font-size:10px;color:#3a3a3a;margin-top:4px;">${s.target ? s.target + ' ' + s.unit : ''}</div>
+        </div>`;
+    }).join('');
+
     el.innerHTML = `
-      <div style="margin-bottom:44px;">
+      <div style="margin-bottom:32px;">
         <div style="font-family:'Syne',sans-serif;font-size:20px;font-weight:800;letter-spacing:-1px;color:#fff;">REP<span style="color:#ff6b35;">TRACK</span></div>
-        <div style="color:#3a3a3a;font-size:10px;letter-spacing:2px;margin-top:3px;">GRIND LOG v1.0</div>
+        <div style="color:#3a3a3a;font-size:10px;letter-spacing:2px;margin-top:3px;">GRIND LOG v3.0</div>
       </div>
-      <div style="font-size:10px;color:#3a3a3a;letter-spacing:2px;margin-bottom:10px;">GOALS</div>
-      ${cards}
-      <button onclick="setState({addingGoal:true})" style="
-        margin-top:10px;width:100%;padding:9px 14px;background:transparent;
-        border:1px dashed #222;border-radius:4px;color:#444;
-        font-size:10px;letter-spacing:1px;text-align:left;transition:border-color 0.15s,color 0.15s;
-      " onmouseover="this.style.borderColor='#444';this.style.color='#888'" onmouseout="this.style.borderColor='#222';this.style.color='#444'">
-        + NEW GOAL
-      </button>
-      <div style="margin-top:auto;padding-top:32px;">
-        <div style="font-size:10px;color:#2a2a2a;letter-spacing:2px;margin-bottom:8px;">BACKUP</div>
-        <div style="display:flex;gap:6px;">
-          <button onclick="exportData()" style="
-            flex:1;padding:8px;background:transparent;border:1px solid #222;border-radius:4px;
-            color:#444;font-size:10px;letter-spacing:1px;transition:all 0.15s;
-          " onmouseover="this.style.borderColor='#555';this.style.color='#888'" onmouseout="this.style.borderColor='#222';this.style.color='#444'">↓ EXPORT</button>
-          <button onclick="importData()" style="
-            flex:1;padding:8px;background:transparent;border:1px solid #222;border-radius:4px;
-            color:#444;font-size:10px;letter-spacing:1px;transition:all 0.15s;
-          " onmouseover="this.style.borderColor='#555';this.style.color='#888'" onmouseout="this.style.borderColor='#222';this.style.color='#444'">↑ IMPORT</button>
-        </div>
-      </div>`;
+      <div style="display:flex;gap:0;margin-bottom:14px;border-bottom:1px solid #1a1a1a;">
+        <button class="nav-tab ${activeView==='goals'?'active':''}" onclick="setState({activeView:'goals'})">GOALS</button>
+        <button class="nav-tab ${activeView==='skills'?'active':''}" onclick="setState({activeView:'skills'})">SKILLS</button>
+      </div>
+      ${activeView === 'goals' ? `
+        ${goalCards}
+        <button onclick="setState({addingGoal:true,addingSkill:false})" style="margin-top:8px;width:100%;padding:9px 14px;background:transparent;border:1px dashed #222;border-radius:4px;color:#444;font-size:10px;letter-spacing:1px;text-align:left;transition:all 0.15s;"
+          onmouseover="this.style.borderColor='#444';this.style.color='#888'" onmouseout="this.style.borderColor='#222';this.style.color='#444'">+ NEW GOAL</button>
+      ` : `
+        ${skillCards}
+        <button onclick="setState({addingSkill:true,addingGoal:false})" style="margin-top:8px;width:100%;padding:9px 14px;background:transparent;border:1px dashed #222;border-radius:4px;color:#444;font-size:10px;letter-spacing:1px;text-align:left;transition:all 0.15s;"
+          onmouseover="this.style.borderColor='#444';this.style.color='#888'" onmouseout="this.style.borderColor='#222';this.style.color='#444'">+ NEW SKILL</button>
+      `}
+      ${backupBtns}`;
   } else {
     el.innerHTML = `
-      <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-end;">
+      <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;">
         <div>
           <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;letter-spacing:-1px;color:#fff;">REP<span style="color:#ff6b35;">TRACK</span></div>
-          <div style="color:#3a3a3a;font-size:10px;letter-spacing:2px;margin-top:2px;">GRIND LOG v1.0</div>
+          <div style="color:#3a3a3a;font-size:10px;letter-spacing:2px;margin-top:2px;">GRIND LOG v3.0</div>
         </div>
         <div style="display:flex;gap:6px;">
-          <button onclick="exportData()" style="padding:6px 10px;background:transparent;border:1px solid #222;border-radius:4px;color:#444;font-size:10px;letter-spacing:1px;">↓</button>
-          <button onclick="importData()" style="padding:6px 10px;background:transparent;border:1px solid #222;border-radius:4px;color:#444;font-size:10px;letter-spacing:1px;">↑</button>
+          <button onclick="exportData()" style="padding:6px 10px;background:transparent;border:1px solid #222;border-radius:4px;color:#444;font-size:10px;">↓</button>
+          <button onclick="importData()" style="padding:6px 10px;background:transparent;border:1px solid #222;border-radius:4px;color:#444;font-size:10px;">↑</button>
         </div>
       </div>`;
   }
 }
 
-function render() {
-  const { goals, reps, log, activeTab, addingGoal, newGoal, celebrating } = state;
+// ── Render: Goals view ────────────────────────────────────────────────────────
+
+function renderGoalsView(mainInner) {
+  const { goals, reps, log, activeTab, addingGoal, newGoal, celebrating, testingMax, newAchievement } = state;
   const active = goals.find(g => g.id === activeTab);
   const activeReps = active ? (reps[active.id] || 0) : 0;
   const pct = active ? Math.min((activeReps / active.goal) * 100, 100) : 0;
   const remaining = active ? Math.max(active.goal - activeReps, 0) : 0;
-
-  renderSidebar();
-
-  const mainInner = document.getElementById('main-inner');
+  const curMax = active ? getCurrentMax(active.id) : 0;
+  const maxPct = active?.maxGoal ? Math.min((curMax / active.maxGoal) * 100, 100) : 0;
+  const achieve = active ? (state.achievements[active.id] || {}) : {};
 
   const mobileTabs = !isDesktop() ? `
+    ${navBar(state.activeView)}
     <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
       ${goals.map(g => `
-        <button class="tab-btn" onclick="setState({activeTab:'${g.id}'})" style="
-          background:${activeTab === g.id ? g.color : 'transparent'};
-          border:1px solid ${activeTab === g.id ? g.color : '#333'};
-          color:${activeTab === g.id ? '#0d0d0d' : '#888'};
+        <button class="tab-btn" onclick="setState({activeTab:'${g.id}',activeView:'goals'})" style="
+          background:${activeTab===g.id?g.color:'transparent'};
+          border:1px solid ${activeTab===g.id?g.color:'#333'};
+          color:${activeTab===g.id?'#0d0d0d':'#888'};
         ">${g.name.toUpperCase()}</button>
       `).join('')}
       <button class="tab-btn" onclick="setState({addingGoal:true})" style="background:transparent;border:1px dashed #333;color:#555;">+ NEW</button>
@@ -275,11 +472,11 @@ function render() {
     <div style="background:#1a1a1a;border:1px solid #252525;border-radius:8px;padding:20px;margin-bottom:28px;animation:slideIn 0.2s ease;">
       <div style="font-size:11px;color:#555;letter-spacing:2px;margin-bottom:14px;">NEW GOAL</div>
       <div style="display:flex;flex-direction:column;gap:10px;">
-        <input id="ng-name" placeholder="Exercise name" value="${newGoal.name}"
-          oninput="state.newGoal.name=this.value"
+        <input id="ng-name" placeholder="Exercise name" value="${newGoal.name}" oninput="state.newGoal.name=this.value"
           style="background:#111;border:1px solid #252525;border-radius:4px;padding:10px 14px;color:#f0f0f0;font-family:inherit;font-size:14px;">
-        <input id="ng-goal" type="number" placeholder="Target reps (e.g. 10000)" value="${newGoal.goal}"
-          oninput="state.newGoal.goal=this.value"
+        <input id="ng-goal" type="number" placeholder="Total rep goal (e.g. 10000)" value="${newGoal.goal}" oninput="state.newGoal.goal=this.value"
+          style="background:#111;border:1px solid #252525;border-radius:4px;padding:10px 14px;color:#f0f0f0;font-family:inherit;font-size:14px;">
+        <input id="ng-max" type="number" placeholder="Max reps/set goal (optional)" value="${newGoal.maxGoal}" oninput="state.newGoal.maxGoal=this.value"
           style="background:#111;border:1px solid #252525;border-radius:4px;padding:10px 14px;color:#f0f0f0;font-family:inherit;font-size:14px;">
         <div style="display:flex;align-items:center;gap:10px;">
           <span style="font-size:11px;color:#555;">COLOR</span>
@@ -299,8 +496,26 @@ function render() {
     return;
   }
 
+  const badges = [25, 50, 75, 100].map(m => {
+    const hit = achieve[m];
+    const labels = {25:'¼',50:'½',75:'¾',100:'★'};
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;opacity:${hit?1:0.2};">
+      <div style="width:36px;height:36px;border-radius:50%;border:2px solid ${hit?active.color:'#333'};
+        background:${hit?active.color+'22':'transparent'};display:flex;align-items:center;justify-content:center;
+        font-family:'Syne',sans-serif;font-weight:800;font-size:13px;color:${hit?active.color:'#333'};">${labels[m]}</div>
+      <span style="font-size:9px;color:${hit?active.color:'#333'};letter-spacing:1px;">${m}%</span>
+    </div>`;
+  }).join('');
+
+  const achievePopup = newAchievement ? `
+    <div style="background:${newAchievement.color};color:#000;padding:12px 20px;border-radius:6px;margin-bottom:20px;
+      text-align:center;font-family:'Syne',sans-serif;font-weight:800;font-size:13px;letter-spacing:2px;animation:achievePop 0.4s ease;">
+      🎖 ${newAchievement.milestone}% OF ${newAchievement.goalName.toUpperCase()} GOAL REACHED!
+    </div>` : '';
+
   const celebrateBanner = celebrating === active.id ? `
-    <div style="background:${active.color};color:#000;padding:12px 20px;border-radius:6px;margin-bottom:24px;text-align:center;font-family:'Syne',sans-serif;font-weight:800;font-size:14px;letter-spacing:2px;animation:slideIn 0.2s ease;">
+    <div style="background:${active.color};color:#000;padding:12px 20px;border-radius:6px;margin-bottom:24px;
+      text-align:center;font-family:'Syne',sans-serif;font-weight:800;font-size:14px;letter-spacing:2px;animation:slideIn 0.2s ease;">
       🏆 GOAL COMPLETE! ABSOLUTE BEAST!
     </div>` : '';
 
@@ -311,46 +526,95 @@ function render() {
   `).join('');
 
   const logItems = (log[active.id] || []).map((entry, i) => `
-    <div style="
-      display:flex;justify-content:space-between;align-items:center;
-      padding:8px 12px;background:#111;border-radius:4px;
-      border-left:2px solid ${active.color}55;
-      ${i === 0 ? 'animation:slideIn 0.2s ease;' : ''}
-    ">
+    <div style="display:flex;justify-content:space-between;align-items:center;
+      padding:8px 12px;background:#111;border-radius:4px;border-left:2px solid ${active.color}55;
+      ${i===0?'animation:slideIn 0.2s ease;':''}">
       <span style="color:${active.color};font-family:'Syne',sans-serif;font-weight:700;font-size:14px;">+${entry.count}</span>
       <span style="color:#3a3a3a;font-size:10px;">${entry.date} ${entry.time}</span>
     </div>`).join('');
 
+  const maxModal = testingMax === active.id ? `
+    <div style="position:fixed;inset:0;background:#000000cc;display:flex;align-items:center;justify-content:center;z-index:100;">
+      <div style="background:#111;border:1px solid #2a2a2a;border-radius:12px;padding:28px;width:min(360px,90vw);animation:slideIn 0.2s ease;">
+        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:#fff;margin-bottom:6px;">TEST YOUR MAX</div>
+        <div style="font-size:11px;color:#555;margin-bottom:20px;">${active.name.toUpperCase()} — MAX REPS IN ONE SET</div>
+        ${curMax ? `<div style="font-size:11px;color:#444;margin-bottom:16px;">CURRENT BEST: <span style="color:${active.color};font-weight:700;">${curMax} REPS</span></div>` : ''}
+        <input id="max-input" type="number" min="1" autofocus placeholder="How many reps?"
+          style="width:100%;background:#0a0a0a;border:1px solid #2a2a2a;border-radius:6px;padding:14px 16px;
+          color:#f0f0f0;font-family:'Syne',sans-serif;font-size:24px;font-weight:700;margin-bottom:12px;"
+          onkeydown="if(event.key==='Enter')submitMax('${active.id}')">
+        ${active.maxGoal ? `<div style="font-size:10px;color:#444;margin-bottom:16px;">TARGET: ${active.maxGoal} reps</div>` : ''}
+        <div style="display:flex;gap:8px;">
+          <button onclick="submitMax('${active.id}')" style="flex:1;padding:12px;background:${active.color};border:none;border-radius:6px;color:#000;font-family:'Syne',sans-serif;font-weight:800;font-size:13px;letter-spacing:1px;">SAVE</button>
+          <button onclick="setState({testingMax:null})" style="padding:12px 18px;background:transparent;border:1px solid #333;border-radius:6px;color:#888;font-size:13px;">CANCEL</button>
+        </div>
+      </div>
+    </div>` : '';
+
+  // Graph with range toggles
+  const graphSVG = buildMaxGraph(active.id, active.color);
+  const rangeBtns = ['30d','3m','all'].map(r => `
+    <button class="range-btn ${state.graphRange===r?'active':''}" onclick="setState({graphRange:'${r}'})">
+      ${r==='30d'?'30D':r==='3m'?'3M':'ALL'}
+    </button>`).join('');
+
+  const maxSection = `
+    <div class="section-pad" style="background:#111;border:1px solid #1a1a1a;border-radius:8px;margin-bottom:28px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div style="font-size:11px;color:#444;letter-spacing:2px;">MAX REPS / SET</div>
+        <button onclick="setState({testingMax:'${active.id}'})" style="
+          padding:5px 12px;background:transparent;border:1px solid ${active.color}66;
+          border-radius:4px;color:${active.color};font-size:10px;letter-spacing:1px;transition:all 0.15s;"
+          onmouseover="this.style.background='${active.color}22'" onmouseout="this.style.background='transparent'">
+          ⚡ TEST MAX
+        </button>
+      </div>
+      ${curMax ? `
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px;">
+          <span style="font-family:'Syne',sans-serif;font-size:36px;font-weight:800;color:${active.color};">${curMax}</span>
+          ${active.maxGoal ? `<span style="color:#333;font-size:14px;">/ ${active.maxGoal} goal</span>` : ''}
+        </div>
+        ${active.maxGoal ? `
+          <div style="height:4px;background:#161616;border-radius:2px;overflow:hidden;margin-bottom:12px;">
+            <div style="height:100%;width:${maxPct}%;background:${active.color};border-radius:2px;transition:width 0.4s;box-shadow:0 0 8px ${active.color}44;"></div>
+          </div>` : ''}
+        ${graphSVG ? `
+          <div style="display:flex;gap:6px;margin-bottom:10px;">${rangeBtns}</div>
+          <div style="margin:0 -4px;">${graphSVG}</div>
+        ` : `<div style="font-size:10px;color:#333;padding:8px 0;">Log at least 2 max tests to see the graph.</div>`}
+      ` : `<div style="font-size:12px;color:#333;padding:8px 0;">No max test yet. Hit ⚡ TEST MAX to log your best set.</div>`}
+    </div>`;
+
   mainInner.innerHTML = `
     ${mobileTabs}
     ${addGoalForm}
-    <div style="${celebrating === active.id ? 'animation:celebrate 0.5s ease;' : ''}">
-
+    ${maxModal}
+    <div style="${celebrating===active.id?'animation:celebrate 0.5s ease;':''}">
       ${isDesktop() ? `<div style="font-size:10px;color:#3a3a3a;letter-spacing:3px;margin-bottom:16px;">${active.name.toUpperCase()}</div>` : ''}
 
-      <div style="margin-bottom:28px;">
+      <div style="margin-bottom:20px;">
         <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">
-          <div class="big-number" style="font-family:'Syne',sans-serif;font-weight:800;color:${active.color};line-height:1;letter-spacing:-3px;">
-            ${activeReps.toLocaleString()}
-          </div>
-          <div style="color:#2e2e2e;font-size:${isDesktop() ? '22px' : '16px'};">/ ${active.goal.toLocaleString()}</div>
+          <div class="big-number" style="font-family:'Syne',sans-serif;font-weight:800;color:${active.color};line-height:1;letter-spacing:-3px;">${activeReps.toLocaleString()}</div>
+          <div style="color:#2e2e2e;font-size:${isDesktop()?'22px':'16px'};">/ ${active.goal.toLocaleString()}</div>
         </div>
         <div style="color:#555;font-size:11px;letter-spacing:2px;margin-top:8px;">
           ${remaining > 0 ? remaining.toLocaleString() + ' REPS TO GO' : '🔥 GOAL CRUSHED'}
         </div>
       </div>
 
-      <div style="margin-bottom:36px;">
-        <div style="height:${isDesktop() ? '8px' : '6px'};background:#161616;border-radius:4px;overflow:hidden;">
+      <div style="margin-bottom:20px;">
+        <div style="height:${isDesktop()?'8px':'6px'};background:#161616;border-radius:4px;overflow:hidden;">
           <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,${active.color}77,${active.color});border-radius:4px;transition:width 0.4s ease;box-shadow:0 0 10px ${active.color}44;"></div>
         </div>
-        <div style="display:flex;justify-content:space-between;margin-top:8px;">
+        <div style="display:flex;justify-content:space-between;margin-top:6px;">
           <span style="font-size:10px;color:#2e2e2e;">0</span>
           <span style="font-size:11px;color:${active.color};font-weight:500;">${pct.toFixed(1)}%</span>
           <span style="font-size:10px;color:#2e2e2e;">${active.goal.toLocaleString()}</span>
         </div>
       </div>
 
+      <div style="display:flex;gap:16px;margin-bottom:28px;">${badges}</div>
+      ${achievePopup}
       ${celebrateBanner}
 
       <div class="section-pad" style="background:#111;border:1px solid #1a1a1a;border-radius:8px;margin-bottom:28px;">
@@ -362,36 +626,169 @@ function render() {
           <button class="add-btn add-btn-pad" onclick="const i=document.getElementById('rep-input');const v=i.value;i.value='';addReps('${active.id}',v);"
             style="background:${active.color};">ADD</button>
         </div>
-        ${(state.log[active.id] || []).length > 0 ? `
-        <button onclick="undoLast('${active.id}')" style="
-          margin-top:8px;width:100%;padding:8px;background:transparent;
-          border:1px solid #2a2a2a;border-radius:4px;color:#555;
-          font-family:inherit;font-size:11px;letter-spacing:1px;transition:all 0.15s;
-        " onmouseover="this.style.borderColor='#ff4444';this.style.color='#ff4444'" onmouseout="this.style.borderColor='#2a2a2a';this.style.color='#555'">
-          ↩ UNDO LAST (+${(state.log[active.id]||[])[0]?.count} ${active.name})
-        </button>` : ''}
+        ${(state.log[active.id]||[]).length > 0 ? `
+          <button onclick="undoLast('${active.id}')" style="margin-top:8px;width:100%;padding:8px;background:transparent;
+            border:1px solid #2a2a2a;border-radius:4px;color:#555;font-family:inherit;font-size:11px;letter-spacing:1px;transition:all 0.15s;"
+            onmouseover="this.style.borderColor='#ff4444';this.style.color='#ff4444'" onmouseout="this.style.borderColor='#2a2a2a';this.style.color='#555'">
+            ↩ UNDO LAST (+${(state.log[active.id]||[])[0]?.count} ${active.name})
+          </button>` : ''}
         <div style="display:flex;gap:8px;margin-top:12px;">${quickBtns}</div>
       </div>
 
-      ${(log[active.id] || []).length > 0 ? `
+      ${maxSection}
+
+      ${(log[active.id]||[]).length > 0 ? `
         <div style="margin-bottom:16px;">
           <div style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:10px;">RECENT</div>
           <div class="log-grid">${logItems}</div>
         </div>` : ''}
 
       ${goals.length > 1 ? `
-        <button onclick="deleteGoal('${active.id}')" style="
-          margin-top:16px;width:100%;padding:9px;background:transparent;
-          border:1px solid #161616;border-radius:4px;color:#222;
-          font-family:inherit;font-size:10px;letter-spacing:2px;transition:color 0.15s,border-color 0.15s;
-        " onmouseover="this.style.color='#555';this.style.borderColor='#333'" onmouseout="this.style.color='#222';this.style.borderColor='#161616'">
+        <button onclick="deleteGoal('${active.id}')" style="margin-top:16px;width:100%;padding:9px;background:transparent;
+          border:1px solid #161616;border-radius:4px;color:#222;font-family:inherit;font-size:10px;letter-spacing:2px;transition:color 0.15s,border-color 0.15s;"
+          onmouseover="this.style.color='#555';this.style.borderColor='#333'" onmouseout="this.style.color='#222';this.style.borderColor='#161616'">
           DELETE GOAL
         </button>` : ''}
     </div>`;
 }
 
+// ── Render: Skills view ───────────────────────────────────────────────────────
+
+function renderSkillsView(mainInner) {
+  const { skills, activeTab, addingSkill, newSkill } = state;
+  const active = skills.find(s => s.id === activeTab);
+
+  const mobileTabs = !isDesktop() ? `
+    ${navBar('skills')}
+    <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
+      ${skills.map(s => `
+        <button class="tab-btn" onclick="setState({activeTab:'${s.id}',activeView:'skills'})" style="
+          background:${activeTab===s.id?s.color:'transparent'};
+          border:1px solid ${activeTab===s.id?s.color:'#333'};
+          color:${activeTab===s.id?'#0d0d0d':'#888'};
+        ">${s.name.toUpperCase()}</button>
+      `).join('')}
+      <button class="tab-btn" onclick="setState({addingSkill:true})" style="background:transparent;border:1px dashed #333;color:#555;">+ NEW</button>
+    </div>` : '';
+
+  const unitOptions = ['reps','secs','mins','kg','lbs'].map(u =>
+    `<option value="${u}" ${newSkill.unit===u?'selected':''}>${u}</option>`).join('');
+
+  const addSkillForm = addingSkill ? `
+    <div style="background:#1a1a1a;border:1px solid #252525;border-radius:8px;padding:20px;margin-bottom:28px;animation:slideIn 0.2s ease;">
+      <div style="font-size:11px;color:#555;letter-spacing:2px;margin-bottom:14px;">NEW SKILL GOAL</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <input placeholder="Skill name (e.g. Handstand)" value="${newSkill.name}" oninput="state.newSkill.name=this.value"
+          style="background:#111;border:1px solid #252525;border-radius:4px;padding:10px 14px;color:#f0f0f0;font-family:inherit;font-size:14px;">
+        <div style="display:flex;gap:8px;">
+          <input type="number" placeholder="Target (e.g. 60)" value="${newSkill.target}" oninput="state.newSkill.target=this.value"
+            style="flex:1;background:#111;border:1px solid #252525;border-radius:4px;padding:10px 14px;color:#f0f0f0;font-family:inherit;font-size:14px;">
+          <select onchange="state.newSkill.unit=this.value"
+            style="background:#111;border:1px solid #252525;border-radius:4px;padding:10px 12px;color:#f0f0f0;font-family:inherit;font-size:13px;">
+            ${unitOptions}
+          </select>
+        </div>
+        <input placeholder="Notes (optional, e.g. freestanding)" value="${newSkill.notes}" oninput="state.newSkill.notes=this.value"
+          style="background:#111;border:1px solid #252525;border-radius:4px;padding:10px 14px;color:#f0f0f0;font-family:inherit;font-size:13px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:11px;color:#555;">COLOR</span>
+          <input type="color" value="${newSkill.color}" oninput="state.newSkill.color=this.value;render()"
+            style="background:none;border:none;width:36px;height:30px;cursor:pointer;">
+          <div style="width:22px;height:22px;border-radius:50%;background:${newSkill.color};"></div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button onclick="addSkill()" style="flex:1;padding:10px;background:${newSkill.color};border:none;border-radius:4px;color:#000;font-size:12px;font-weight:700;letter-spacing:1px;">CREATE</button>
+          <button onclick="setState({addingSkill:false})" style="padding:10px 18px;background:transparent;border:1px solid #333;border-radius:4px;color:#888;font-size:12px;">CANCEL</button>
+        </div>
+      </div>
+    </div>` : '';
+
+  if (!active && !addingSkill) {
+    mainInner.innerHTML = mobileTabs + addSkillForm + `
+      <div style="text-align:center;color:#333;font-size:13px;padding-top:60px;">
+        No skill goals yet.<br><br>
+        <button onclick="setState({addingSkill:true})" style="padding:10px 20px;background:transparent;border:1px dashed #333;border-radius:4px;color:#555;font-size:11px;letter-spacing:1px;">+ ADD SKILL GOAL</button>
+      </div>`;
+    return;
+  }
+
+  if (!active) {
+    mainInner.innerHTML = mobileTabs + addSkillForm;
+    return;
+  }
+
+  const targetLabel = active.target ? `${active.target} ${active.unit}` : '';
+
+  mainInner.innerHTML = `
+    ${mobileTabs}
+    ${addSkillForm}
+    ${isDesktop() ? `<div style="font-size:10px;color:#3a3a3a;letter-spacing:3px;margin-bottom:16px;">SKILL GOAL</div>` : ''}
+
+    <div style="margin-bottom:32px;">
+      <div style="font-family:'Syne',sans-serif;font-size:${isDesktop()?'40px':'28px'};font-weight:800;line-height:1;margin-bottom:12px;
+        color:${active.achieved?active.color:'#f0f0f0'};">${active.name}</div>
+      ${targetLabel ? `<div style="font-size:13px;color:#555;margin-bottom:8px;">TARGET: <span style="color:${active.color};">${targetLabel}</span></div>` : ''}
+      ${active.notes ? `<div style="font-size:12px;color:#444;margin-bottom:8px;">${active.notes}</div>` : ''}
+      ${active.achieved ? `<div style="font-size:11px;color:${active.color};letter-spacing:2px;margin-bottom:16px;">✓ ACHIEVED ${active.achievedDate ? '· ' + active.achievedDate : ''}</div>` : ''}
+    </div>
+
+    <button onclick="toggleSkillAchieved('${active.id}')" style="
+      width:100%;padding:16px;border-radius:8px;font-family:'Syne',sans-serif;font-weight:800;font-size:14px;letter-spacing:2px;
+      background:${active.achieved?'transparent':active.color};
+      border:2px solid ${active.color};
+      color:${active.achieved?active.color:'#000'};
+      transition:all 0.2s;margin-bottom:28px;
+    " onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">
+      ${active.achieved ? '↩ MARK INCOMPLETE' : '✓ MARK AS ACHIEVED'}
+    </button>
+
+    ${active.achieved ? `
+      <div style="background:#111;border:1px solid ${active.color}33;border-radius:8px;padding:20px;margin-bottom:28px;text-align:center;">
+        <div style="font-size:32px;margin-bottom:8px;">🏆</div>
+        <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:800;color:${active.color};letter-spacing:1px;">SKILL UNLOCKED</div>
+        ${active.achievedDate ? `<div style="font-size:11px;color:#555;margin-top:4px;">${active.achievedDate}</div>` : ''}
+      </div>` : ''}
+
+    <button onclick="deleteSkill('${active.id}')" style="width:100%;padding:9px;background:transparent;
+      border:1px solid #161616;border-radius:4px;color:#222;font-family:inherit;font-size:10px;letter-spacing:2px;transition:all 0.15s;"
+      onmouseover="this.style.color='#555';this.style.borderColor='#333'" onmouseout="this.style.color='#222';this.style.borderColor='#161616'">
+      DELETE SKILL
+    </button>
+  `;
+}
+
+// ── Main render ───────────────────────────────────────────────────────────────
+
+function render() {
+  renderSidebar();
+  const mainInner = document.getElementById('main-inner');
+  if (state.activeView === 'skills') {
+    renderSkillsView(mainInner);
+  } else {
+    renderGoalsView(mainInner);
+  }
+}
+
 window.addEventListener('resize', render);
 load();
+
+// Migrate v2 → v3
+if (!localStorage.getItem(STORAGE_KEY)) {
+  for (const key of ['reptrack-v2', 'reptrack-v1']) {
+    const old = localStorage.getItem(key);
+    if (old) {
+      try {
+        const d = JSON.parse(old);
+        if (d.goals) {
+          state.goals = d.goals; state.reps = d.reps||{}; state.log = d.log||{};
+          state.maxLog = d.maxLog||{}; state.achievements = d.achievements||{};
+          save(); break;
+        }
+      } catch(e) {}
+    }
+  }
+}
+
 render();
 </script>
 </body>
